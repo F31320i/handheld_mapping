@@ -218,17 +218,22 @@ pgo_backend:
     publish_correction_tf: true # broadcast map -> odom from the optimised graph
     publish_current_scan: false # /pgo/current_scan, for checking the deskew
 
-    # Front-end divergence gate. When the LIO/VIO front end loses its lock it
-    # does not stop publishing: it integrates the IMU alone and the pose runs
-    # away at tens/hundreds of m/s. Any scan whose pose implies more than
-    # sanity_max_speed, or moves more than sanity_max_jump from the last pose
-    # accepted, is refused (no keyframe, no fusion, no loop search) and logged
-    # as a WARN. Back-end band-aid only: it cannot fix or restart the front end,
-    # it just keeps a divergence out of the delivered map.
-    # Re-acquisition: one discrete step followed by normal motion is picked up
-    # again after sanity_reacquire_scans sane scans, provided the pose never
-    # moved more than sanity_reacquire_jump from the last accepted one.
+    # Console volume. False keeps the terminal silent during a survey: no
+    # keyframe lines, no map/loop/GNSS chatter, no startup banner. What still
+    # prints: warnings, errors, the pose-jump report below, and the save
+    # confirmations.
+    verbose: false
+
+    # Pose-jump watch, report-only by default. When the LIO/VIO front end loses
+    # its lock it does not stop publishing: it integrates the IMU alone and the
+    # pose runs away at tens/hundreds of m/s. A pose that jumps more than
+    # sanity_max_jump (or implies more than sanity_max_speed) since the last one
+    # prints a WARN -- and is mapped anyway, so the survey keeps growing. Set
+    # sanity_refuse_scans: true to drop such scans instead (no keyframe, no
+    # fusion, no loop search, with re-acquisition after sanity_reacquire_scans
+    # sane scans within sanity_reacquire_jump).
     sanity_enabled: true
+    sanity_refuse_scans: false
     sanity_max_speed: 3.0       # m/s
     sanity_max_jump: 0.5        # m
     sanity_reacquire_scans: 20

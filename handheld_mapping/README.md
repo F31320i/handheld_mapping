@@ -462,42 +462,72 @@ ros2 launch handheld_mapping mapping_livo2.py use_camera:=false img_en:=0 \
 `img_en:=1` 而相机没数据时 FAST-LIVO2 **不会报错、也不会出轨迹**（在等属于
 那一帧的图），所以 launch 里做了拦截：`use_camera:=false` 时 `img_en` 必须给 0。
 
-### 5.1 前端发散时后端会拦住
+### 5.1 终端平时不出声，位姿一跳就报一行
+
+后端默认**安静**（`verbose: false`）：建图过程中不打印关键帧、不打印出图/回环/GNSS
+的任何一行。还在打的只有三类：**警告和错误**、**位姿跳变报告**、**存图确认**。
 
 FAST-LIVO2 丢掉 VIO 锁之后**不会停、也不会说**：它退回只积分 IMU，位姿以几十到
-几百 m/s 飞出去（2026-10-26 那次跑到了 −7 km），而且不会自恢复。这些位姿如果进了
-后端，每一帧都会变成一个关键帧，把一团噪声焊在地图里，还会拖着位姿图一起偏。
-
-所以后端有一道位姿合理性闸门（`config/pgo_handheld.yaml` 里的 `sanity_*`）：
+几百 m/s 飞出去（2026-10-26 那次跑到了 −7 km），而且不会自恢复。所以后端留了一个
+**只报告不拦截**的位姿跳变检测（`config/pgo_handheld.yaml` 里的 `sanity_*`）：
 
 | 参数 | 默认 | 含义 |
 |---|---|---|
-| `sanity_enabled` | `true` | 总开关 |
+| `verbose` | `false` | 实时日志总开关 |
+| `sanity_enabled` | `true` | 位姿跳变检测开关（只打印） |
+| `sanity_refuse_scans` | `false` | `true` = 跳变的帧不再建图（旧行为） |
 | `sanity_max_speed` | `3.0` m/s | 相对上一个被接受位姿的速度上限 |
 | `sanity_max_jump` | `0.5` m | 相对上一个被接受位姿的单次位移上限 |
-| `sanity_reacquire_scans` | `20` | 连续多少帧正常增量后重新接管 |
-| `sanity_reacquire_jump` | `2.0` m | 重新接管时允许的最大偏移 |
 
-触发时那一帧**整帧丢掉**（不进关键帧、不做融合、不搜回环），终端打一条 WARN：
+跳变时打一条（节流：第一条立即，之后每 2 s 一条）：
 
 ```
-Front end appears to have diverged: pose jumped 120.61 m in 0.698 s (= 172.9 m/s,
-limits 0.50 m / 3.0 m/s); scan refused. 7 refused in a row, 7 total.
-The map is not being polluted, but nothing new is being added either.
+Pose jumped 120.61 m in 0.698 s (= 172.9 m/s, limits 0.50 m / 3.0 m/s);
+7 in a row, 7 total. The scan is being mapped anyway -- if this is a real
+divergence, stop and re-run the survey.
 ```
 
-看到这条就**别走了**：站起来、走回上一处走对的地方、或者直接 Ctrl-C 存图（此时存的
-是发散前最后一张干净的图）。地图停止增长是正确结果，因为已经没东西可建了。
+**默认这帧照样建图。** 实机上这套阈值误报太多（快转身、丢帧都会触发），拦掉那几帧
+对图反而更糟；但"图悄悄地被飘掉的帧填满"更糟，所以保留报告、不保留拦截。
+真要拦截就把 `sanity_refuse_scans` 改成 `true`——此时跳变的帧整帧丢掉（不进关键帧、
+不做融合、不搜回环），并在连续 `sanity_reacquire_scans` 帧正常增量、且离上一个好位姿
+不超过 `sanity_reacquire_jump` 后重新接管。
 
-重接管是为「单次跳变」准备的（丢了一帧、手抖了一下、odom 出现阶跃）：连续
-`sanity_reacquire_scans` 帧的**帧间增量**都正常、且离上一个好位姿不超过
-`sanity_reacquire_jump`，就按新位置继续。真正发散的前端一是不满足（还在飞），二是
-动辄公里级偏移，永远接不回来——这是有意的。
+**这道检测治不了前端**：它不能让 LIVO2 恢复、不能重启、也不能告诉你该往回走到哪。
+看到它连续打，正确动作是 Ctrl-C 存图、重走一遍。
 
-**这道闸门治不了前端**：它不能让 LIVO2 恢复、不能重启、也不能告诉你该往回走到哪。
-它只做两件事——别把污染写进交付的图，以及一秒内让你在终端里看见。
+排查时想临时看全量日志，不用改配置重编，直接对运行中的节点开：
 
-### 5.2 只有雷达时：fast_limo 冒烟跑（不需要标定板）
+```bash
+ros2 param set /pgo_backend verbose true
+```
+
+### 5.2 前端崩了怎么留证据（默认在 gdb 下跑）
+
+FAST-LIVO2 在实机上**会 segfault**（2026-10-26 20:29:39：`segfault at
+fffffffffffffff4`，崩在 IMU 回调那一片，它自己的日志最后几行完全正常，没有任何报错；
+apport 也没留 core，`/var/crash` 里什么都没有）。前端一死，`/aft_mapped_to_init`
+停发，后面整条链——bridge、`/cloud_registered`、PGO 的图、轨迹、rviz——全部静止。
+
+所以 launch 现在**默认把 LIVO2 套在 gdb 里跑**（`launch/_common.py` 的
+`livo2_front_end(..., gdb=True)`）。正常运行时毫无区别，Ctrl-C 照常终止；一旦
+segfault，gdb 会把全线程栈和寄存器写进同一个日志：
+
+```bash
+grep -n "Program received signal" -A 120 /tmp/fastlivo_mapping.log
+```
+
+拿到栈就能定位到具体函数（release 版没有行号，但函数名和调用链是准的；要行号得
+`-DCMAKE_BUILD_TYPE=RelWithDebInfo` 重编 fast_livo）。
+
+不想用 gdb 时：`LIVO2_NO_GDB=1 ros2 launch handheld_mapping mapping_livo2.py ...`。
+
+rviz 被压到 `warn` 级（`launch/_common.py` 的 `rviz()`），所以终端不再刷
+`Message Filter dropping message: frame 'camera_init' ... earlier than all the data in
+the transform cache`——那是 rviz 自己画不出 latched 老消息（戳比 10 s TF 缓存还早），
+跟建图无关。想彻底安静就把那一行的 `'warn'` 改成 `'error'`。
+
+### 5.3 只有雷达时：fast_limo 冒烟跑（不需要标定板）
 
 fast_limo 是**纯 LiDAR + IMU**，不用相机，所以它不需要相机内参、不需要
 LiDAR-相机外参、也不需要那块大标定板。在标定板做好之前，这是验证

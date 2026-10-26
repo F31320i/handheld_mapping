@@ -131,33 +131,36 @@ pgo_backend:
     save_extra_outputs: true
     scan_queue_size: 2
 
-    # Front-end divergence gate. This is the guard for the failure mode seen on
-    # 2026-10-26: FAST-LIVO2 loses its VIO lock ("effective feature num" falls to
-    # 0, "No point!!!"), falls back to integrating the IMU alone and the pose
-    # runs away -- hundreds of m/s, ending kilometres from the room. It never
-    # recovers and it never says so.
+    # Console. verbose: false keeps the terminal silent for the whole survey --
+    # no keyframe lines, no map/loop/GNSS chatter. What still prints: warnings,
+    # errors, the pose-jump report below, and the save confirmations.
+    verbose: false
+
+    # Pose-jump watch (report only). A pose that jumps more than sanity_max_jump
+    # from the last one prints a WARN and the scan is mapped anyway. That is the
+    # whole point: on real handheld data the thresholds false-alarm often enough
+    # that refusing scans cost more than it saved (2026-10-26), but a silent
+    # survey that quietly fills with drifted keyframes is worse, so the jump is
+    # still reported.
     #
-    # Without this gate those poses become keyframes: clouds of noise fused into
-    # the map where the rig never was, plus odom edges dragging the graph. With
-    # it, such a scan is refused (no keyframe, no fusion, no loop search) and a
-    # WARN prints how far and how fast the front end moved. The map stops
-    # growing -- which is the correct outcome, there is nothing left to map --
-    # and the terminal says why within a second.
-    #
-    # It is a back-end band-aid: it cannot fix, restart or even tell you where to
-    # walk back to. Nothing in the front end is touched.
+    # What it catches: FAST-LIVO2 losing its VIO lock ("effective feature num"
+    # falls to 0, "No point!!!"), falling back to integrating the IMU alone, and
+    # the pose running away at hundreds of m/s. The watch cannot fix that, tell
+    # you where to walk back to, or restart the front end -- it just says so.
     #
     # Thresholds: 0.5 m between two processed scans is ~5 m/s at 10 Hz and
-    # 15 m/s at 30 Hz -- both far above a handheld walk (1.5 m/s), and the jump
-    # limit binds first for a step-like failure. Lower sanity_max_speed if the
-    # operator moves slowly and you want to catch a slow drift earlier.
+    # 15 m/s at 30 Hz -- both far above a handheld walk (1.5 m/s).
     sanity_enabled: true
+    # false (default): report the jump, keep mapping. true: drop the scan (no
+    # keyframe, no fusion, no loop search) and re-acquire after
+    # sanity_reacquire_scans sane scans within sanity_reacquire_jump of the last
+    # accepted pose. Turning refusals back on is a one-line change here.
+    sanity_refuse_scans: false
     sanity_max_speed: 3.0       # m/s
     sanity_max_jump: 0.5        # m
-    # One discrete step (a dropped frame, a yank on the rig) must not end the
-    # survey: after this many consecutive sane scan-to-scan steps the gate
-    # adopts the new position, as long as it is within sanity_reacquire_jump of
-    # the last accepted pose. A genuinely diverged front end is either still
-    # flying (step insane) or far away (offset insane), so it never qualifies.
+    # Refuse-mode only: one discrete step (a dropped frame, a yank on the rig)
+    # must not end the survey. After this many consecutive sane scan-to-scan
+    # steps the gate adopts the new position, as long as it is within
+    # sanity_reacquire_jump of the last accepted pose.
     sanity_reacquire_scans: 20
     sanity_reacquire_jump: 2.0  # m

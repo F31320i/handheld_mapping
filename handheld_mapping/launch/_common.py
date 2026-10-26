@@ -155,7 +155,8 @@ def parameter_blackboard(camera_params_file):
     )
 
 
-def livo2_front_end(params_file, img_en=1, log_path='/tmp/fastlivo_mapping.log'):
+def livo2_front_end(params_file, img_en=1, log_path='/tmp/fastlivo_mapping.log',
+                    gdb=None):
     """FAST-LIVO2 mapping node.
 
     img_en 0 switches it to LIO-only (slam_mode_ = ONLY_LIO); the camera nodes
@@ -170,9 +171,39 @@ def livo2_front_end(params_file, img_en=1, log_path='/tmp/fastlivo_mapping.log')
     log_path instead (`tail -f` it, or pass log_path='' to see it live). The
     prefix is built here, so log_path must be a plain string, not a
     substitution.
+
+    gdb runs the front end under gdb in batch mode, and it is the default:
+    gdb=None means "on unless LIVO2_NO_GDB is set", gdb=False forces it off
+    (2026-10-26). The node
+    segfaulted twice on the real rig -- 20:29:39 today, `segfault at
+    fffffffffffffff4` in the IMU-callback dispatch, nothing in its own log --
+    and apport produced no core, so the only way to see where is a live
+    debugger. Costs: a ptrace attach (negligible for this workload) and
+    SIGINT/SIGTERM are passed through untouched, so Ctrl-C behaves normally.
+    On a crash the backtrace lands at the end of log_path:
+
+        grep -n "Program received signal" -A 120 /tmp/fastlivo_mapping.log
     """
     parameters = [params_file, {'common.img_en': ParameterValue(img_en, value_type=int)}]
-    prefix = f'''bash -c 'exec "$@" > {log_path} 2>&1' _''' if log_path else ''
+    if gdb is None:
+        # Escape hatch without a launch argument: LIVO2_NO_GDB=1 ros2 launch ...
+        gdb = os.environ.get('LIVO2_NO_GDB', '') == ''
+    if not log_path:
+        prefix = ''
+    elif gdb:
+        # -batch -nx: no prompt, no user rc. The signal handlers make sure a
+        # Ctrl-C still reaches the front end instead of stopping it in gdb.
+        prefix = (
+            "bash -c 'exec gdb -batch -nx "
+            '-ex "set pagination off" -ex "set confirm off" '
+            '-ex "handle SIGINT nostop noprint pass" '
+            '-ex "handle SIGTERM nostop noprint pass" '
+            '-ex "handle SIGHUP nostop noprint pass" '
+            '-ex run -ex "thread apply all bt full" -ex "info registers" '
+            f'-ex quit --args "$@" > {log_path} 2>&1\' _'
+        )
+    else:
+        prefix = f'''bash -c 'exec "$@" > {log_path} 2>&1' _'''
     return Node(
         package='fast_livo',
         executable='fastlivo_mapping',
@@ -263,5 +294,12 @@ def rviz(config_path):
         executable='rviz2',
         name='rviz2',
         output='log',
-        arguments=['-d', config_path],
+        # --log-level warn keeps RViz's per-frame chatter out of the terminal.
+        # The one that matters: "Message Filter dropping message: frame
+        # 'camera_init' ... earlier than all the data in the transform cache",
+        # printed at INFO for every redraw of a latched map whose stamp is older
+        # than RViz's 10 s TF cache. It is cosmetic -- the map and the back end
+        # are unaffected -- and it floods the screen once the front end stops
+        # publishing. Drop to 'error' to silence RViz entirely.
+        arguments=['-d', config_path, '--ros-args', '--log-level', 'warn'],
     )

@@ -41,6 +41,7 @@
 #include <nav_msgs/msg/path.hpp>
 #include <pcl/common/transforms.h>
 #include <pcl_conversions/pcl_conversions.h>
+#include <rcl_interfaces/msg/set_parameters_result.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <sensor_msgs/point_cloud2_iterator.hpp>
@@ -209,17 +210,35 @@ public:
     setupSubscriptions();
     setupServices();
 
+    // verbose is the one parameter worth changing mid-survey: silent for the
+    // walk, detail when something looks wrong. Every other parameter is read
+    // once at startup and reported "successful" here so that setting it is not
+    // an error -- it simply does nothing until the next launch.
+    verbose_cb_ = add_on_set_parameters_callback(
+      [this](const std::vector<rclcpp::Parameter> & params) {
+        rcl_interfaces::msg::SetParametersResult result;
+        result.successful = true;
+        for (const auto & p : params) {
+          if (p.get_name() == "verbose") {
+            verbose_ = p.as_bool();
+          }
+        }
+        return result;
+      });
+
     running_ = true;
     worker_ = std::thread(&PgoBackendNode::workerLoop, this);
 
-    RCLCPP_INFO(
-      get_logger(),
-      "PGO back end: cloud='%s' (%s, deskew=%s) odom='%s' map_frame='%s' loops=%s",
-      (frontend_source_ ? frontend_cloud_topic_ : scan_topic_).c_str(),
-      frontend_source_ ? "front end, already undistorted" : "raw lidar",
-      (!frontend_source_ && deskew_enabled_) ? "on" : "off",
-      odom_topic_.c_str(), map_frame_.c_str(), loop_enabled_ ? "on" : "off");
-    if (gnss_enabled_) {
+    if (verbose_) {
+      RCLCPP_INFO(
+        get_logger(),
+        "PGO back end: cloud='%s' (%s, deskew=%s) odom='%s' map_frame='%s' loops=%s",
+        (frontend_source_ ? frontend_cloud_topic_ : scan_topic_).c_str(),
+        frontend_source_ ? "front end, already undistorted" : "raw lidar",
+        (!frontend_source_ && deskew_enabled_) ? "on" : "off",
+        odom_topic_.c_str(), map_frame_.c_str(), loop_enabled_ ? "on" : "off");
+    }
+    if (gnss_enabled_ && verbose_) {
       RCLCPP_INFO(
         get_logger(), "Absolute position factor: '%s', sigmas [%.3f %.3f %.3f] m",
         gnss_topic_.c_str(), gnss_sigmas_[0], gnss_sigmas_[1], gnss_sigmas_[2]);
@@ -350,9 +369,19 @@ private:
     declare_parameter<bool>("save_extra_outputs", false);
     declare_parameter<int>("scan_queue_size", 2);
 
-    // Front-end divergence gate. See poseIsSane() for what it does and, more to
-    // the point, what it cannot do.
+    // Console volume. False (the default) keeps the terminal silent during a
+    // survey: no keyframe lines, no map/loop/GNSS chatter, no startup banner.
+    // What still prints is what needs a human: warnings, errors, the pose-jump
+    // report below, and the save confirmations.
+    declare_parameter<bool>("verbose", false);
+
+    // Pose-jump watch. By default it only *reports*: a pose that jumps more
+    // than sanity_max_jump (or implies more than sanity_max_speed) since the
+    // last accepted pose prints a WARN, and the scan is still built into the
+    // map. sanity_refuse_scans=true brings back the old behaviour of dropping
+    // such scans instead.
     declare_parameter<bool>("sanity_enabled", true);
+    declare_parameter<bool>("sanity_refuse_scans", false);
     declare_parameter<double>("sanity_max_speed", 3.0);
     declare_parameter<double>("sanity_max_jump", 0.5);
     declare_parameter<int>("sanity_reacquire_scans", 20);
@@ -382,7 +411,10 @@ private:
     save_extra_outputs_ = get_parameter("save_extra_outputs").as_bool();
     scan_queue_size_ = std::max(1, static_cast<int>(get_parameter("scan_queue_size").as_int()));
 
+    verbose_ = get_parameter("verbose").as_bool();
+
     sanity_enabled_ = get_parameter("sanity_enabled").as_bool();
+    sanity_refuse_scans_ = get_parameter("sanity_refuse_scans").as_bool();
     sanity_max_speed_ = std::max(0.1, get_parameter("sanity_max_speed").as_double());
     sanity_max_jump_ = std::max(0.01, get_parameter("sanity_max_jump").as_double());
     sanity_reacquire_scans_ =
@@ -647,8 +679,9 @@ private:
       return;
     }
 
-    // Before anything is derived from this pose: is it believable? See
-    // poseIsSane() -- a diverging front end must not reach the keyframe list.
+    // Read the pose-jump watch before anything is derived from this pose. In
+    // the default report-only mode it warns and returns true; see
+    // poseIsSane().
     if (sanity_enabled_ && !poseIsSane(scan.pose_end, scan.stamp)) {
       return;
     }
@@ -701,11 +734,13 @@ private:
     // an incremental add and a later full rebuild see exactly the same points.
     assembler_.add(map_pose, *keyframes_.frames()[id].cloud);
 
-    RCLCPP_INFO(
-      get_logger(),
-      "kf %d: t=%.2f pts=%zu (raw %zu, %zu invalid)%s%s",
-      id, scan.stamp, scan.cloud->size(), scan.raw_points, scan.invalid, scan.detail.c_str(),
-      scan.odom_extrapolated ? " [odom extrapolated]" : "");
+    if (verbose_) {
+      RCLCPP_INFO(
+        get_logger(),
+        "kf %d: t=%.2f pts=%zu (raw %zu, %zu invalid)%s%s",
+        id, scan.stamp, scan.cloud->size(), scan.raw_points, scan.invalid, scan.detail.c_str(),
+        scan.odom_extrapolated ? " [odom extrapolated]" : "");
+    }
 
     if (loop_enabled_) {
       tryLoopClosure(id);
@@ -830,32 +865,32 @@ private:
     }
   }
 
-  // Plausibility gate on the front-end pose.
+  // Pose-jump watch.
   //
-  // A front end that loses its LIO/VIO lock does not stop publishing and does
-  // not say so: FAST-LIVO2 falls back to integrating the IMU alone and the pose
-  // runs away at tens or hundreds of m/s. One such scan is enough to wreck the
-  // survey -- it becomes a keyframe, the assembler fuses a cloud of noise at a
-  // place the rig was never at, and the pose graph then has to reconcile that
-  // node with every odom edge around it.
+  // Why it exists: a front end that loses its LIO/VIO lock does not stop
+  // publishing and does not say so -- FAST-LIVO2 falls back to integrating the
+  // IMU alone and the pose runs away. This is the only place in the back end
+  // that can see that happen, so it is the only place that says so.
   //
-  // So: refuse any scan whose pose implies more than sanity_max_speed velocity
-  // or more than sanity_max_jump of displacement from the last pose this gate
-  // accepted. Refused means no keyframe, no fusion, no loop search -- just a
-  // WARN that says how far and how fast the front end moved.
+  // By default it REPORTS AND ACCEPTS: a jump prints a WARN and the scan goes
+  // into the map like any other. That is deliberate -- on real handheld data
+  // the thresholds false-alarm (a fast turn, a dropped frame), and a survey
+  // that silently stops growing is worse than one that says "pose jumped" and
+  // carries on. sanity_refuse_scans=true restores the stricter mode described
+  // at the bottom of this comment.
   //
-  // It is honest about being a band-aid: it cannot fix the front end, tell the
-  // operator where to walk back to, or restart it. It only stops the divergence
-  // ending up in the delivered map, and makes it visible while it happens.
+  // Refuse mode (sanity_refuse_scans: true): a scan whose pose implies more than
+  // sanity_max_speed or more than sanity_max_jump of displacement from the last
+  // accepted pose is dropped -- no keyframe, no fusion, no loop search -- with a
+  // WARN saying how far and how fast the front end moved. Re-acquisition: a
+  // *single* bad jump followed by normal motion (a step in the odometry, a
+  // dropped frame, a yank on the rig) must not lock the gate out for the rest of
+  // the survey, so after sanity_reacquire_scans sane scan-to-scan steps within
+  // sanity_reacquire_jump of the last accepted pose the gate adopts the new
+  // position.
   //
-  // Re-acquisition: a *single* bad jump followed by normal motion (a step in the
-  // odometry, a dropped frame, a yank on the rig) must not lock the gate out
-  // for the rest of the survey. So the gate watches the scan-to-scan step as
-  // well; if it stays sane for sanity_reacquire_scans scans AND the pose never
-  // wandered more than sanity_reacquire_jump from the last accepted pose, the
-  // gate adopts the new position and carries on. A genuinely diverged front end
-  // never gets there: either it keeps flying (the step is insane) or it is
-  // kilometres away (the offset is insane).
+  // Either way it cannot fix the front end, tell the operator where to walk back
+  // to, or restart it.
   bool poseIsSane(const Pose & pose, double stamp)
   {
     const Eigen::Vector3d p = pose.matrix().block<3, 1>(0, 3).cast<double>();
@@ -881,6 +916,30 @@ private:
     const bool step_ok = step_speed <= sanity_max_speed_;
 
     bool accept = jump <= sanity_max_jump_ && speed <= sanity_max_speed_;
+
+    if (!sanity_refuse_scans_) {
+      // Report-only: the verdict is printed, never acted on.
+      if (accept) {
+        jump_streak_ = 0;
+      } else {
+        ++jump_streak_;
+        ++dropped_jump_;
+        const int period = jump_streak_ == 1 ? 500 : 2000;
+        RCLCPP_WARN_THROTTLE(
+          get_logger(), *get_clock(), period,
+          "Pose jumped %.2f m in %.3f s (= %.1f m/s, limits %.2f m / %.1f m/s); "
+          "%zu in a row, %zu total. The scan is being mapped anyway -- if this "
+          "is a real divergence, stop and re-run the survey.",
+          jump, dt, speed, sanity_max_jump_, sanity_max_speed_,
+          static_cast<std::size_t>(jump_streak_), dropped_jump_.load());
+      }
+      gate_pose_ = p;
+      gate_stamp_ = stamp;
+      prev_pose_ = p;
+      prev_stamp_ = stamp;
+      have_prev_ = true;
+      return true;
+    }
 
     if (accept) {
       reacquire_streak_ = 0;
@@ -949,13 +1008,15 @@ private:
       // converge, or one of the clouds was too small to try. Printing the
       // sizes separates the two, which is the difference between tuning the
       // registration and fixing the input.
-      RCLCPP_INFO(
-        get_logger(),
-        "loop candidate kf %d -> %d: fitness=%.3f inliers=%.2f shift=%.2fm "
-        "voxels=%zu/%zu loose=%d converged=%d %s",
-        id, j, v.fitness, v.inlier_ratio,
-        (v.from_T_to.t - guess.t).norm(), v.source_points, v.target_points,
-        v.loose_inliers, v.converged ? 1 : 0, v.accepted ? "ACCEPTED" : "rejected");
+      if (verbose_) {
+        RCLCPP_INFO(
+          get_logger(),
+          "loop candidate kf %d -> %d: fitness=%.3f inliers=%.2f shift=%.2fm "
+          "voxels=%zu/%zu loose=%d converged=%d %s",
+          id, j, v.fitness, v.inlier_ratio,
+          (v.from_T_to.t - guess.t).norm(), v.source_points, v.target_points,
+          v.loose_inliers, v.converged ? 1 : 0, v.accepted ? "ACCEPTED" : "rejected");
+      }
 
       if (!v.accepted) {
         continue;
@@ -970,7 +1031,9 @@ private:
       loop_constraints_.push_back(lc);
       graph_.addLoopEdge(j, id, v.from_T_to);
 
-      RCLCPP_INFO(get_logger(), "Optimising pose graph (%zu loops)", loop_constraints_.size());
+      if (verbose_) {
+        RCLCPP_INFO(get_logger(), "Optimising pose graph (%zu loops)", loop_constraints_.size());
+      }
 
       if (!applyOptimisation("loop")) {
         loop_constraints_.pop_back();
@@ -997,7 +1060,9 @@ private:
     for (std::size_t k = 0; k < frames.size(); ++k) {
       frames[k].pose = optimised[k];
     }
-    RCLCPP_INFO(get_logger(), "Pose graph optimised (%s), RMS shift %.3f m", what, rms_shift);
+    if (verbose_) {
+      RCLCPP_INFO(get_logger(), "Pose graph optimised (%s), RMS shift %.3f m", what, rms_shift);
+    }
     // The map is fused incrementally, so the keyframes that just moved have to
     // be fused again. Deferred to the next publish/save: an optimisation can
     // arrive every second (GNSS anchors), and re-fusing on each one would undo
@@ -1164,7 +1229,7 @@ private:
     gnss_t_ = t;
     gnss_yaw_ = yaw;
     have_gnss_align_ = true;
-    if (notify) {
+    if (notify && verbose_) {
       RCLCPP_INFO(
         get_logger(),
         "gnss: global <- odom alignment from %zu fixes, %.2f m spread: yaw %.4f rad, "
@@ -1193,13 +1258,15 @@ private:
     const Eigen::Vector3d residual = p_map - frames[k].pose.t;
     const double innovation = residual.norm();
 
-    RCLCPP_INFO(
-      get_logger(),
-      "gnss anchor %zu: kf %d (%.2f s), fix %.2f s, %.2f m away, fixed at "
-      "(%.3f, %.3f, %.3f), innovation %.3f m (xy %.3f, z %.3f)",
-      gnss_anchors_ + 1, k, frames[k].stamp, fix->stamp, lever.norm(),
-      p_map.x(), p_map.y(), p_map.z(), innovation, residual.head<2>().norm(),
-      std::abs(residual.z()));
+    if (verbose_) {
+      RCLCPP_INFO(
+        get_logger(),
+        "gnss anchor %zu: kf %d (%.2f s), fix %.2f s, %.2f m away, fixed at "
+        "(%.3f, %.3f, %.3f), innovation %.3f m (xy %.3f, z %.3f)",
+        gnss_anchors_ + 1, k, frames[k].stamp, fix->stamp, lever.norm(),
+        p_map.x(), p_map.y(), p_map.z(), innovation, residual.head<2>().norm(),
+        std::abs(residual.z()));
+    }
 
     if (applyOptimisation("gnss")) {
       ++gnss_anchors_;
@@ -1214,8 +1281,10 @@ private:
           thinned.push_back(gnss_records_[i]);
         }
         gnss_records_ = std::move(thinned);
-        RCLCPP_INFO(
-          get_logger(), "gnss: anchor set thinned to %zu factors", gnss_records_.size());
+        if (verbose_) {
+          RCLCPP_INFO(
+            get_logger(), "gnss: anchor set thinned to %zu factors", gnss_records_.size());
+        }
       }
     } else {
       // graph_ still holds `anchors`, which includes the new one; put back the
@@ -1279,9 +1348,11 @@ private:
     if (assembler_needs_rebuild_) {
       assembler_.rebuild(keyframes_.frames());
       assembler_needs_rebuild_ = false;
-      RCLCPP_INFO(
-        get_logger(), "Map rebuilt after pose-graph update: %zu cells from %zu keyframes",
-        assembler_.cellCount(), keyframes_.size());
+      if (verbose_) {
+        RCLCPP_INFO(
+          get_logger(), "Map rebuilt after pose-graph update: %zu cells from %zu keyframes",
+          assembler_.cellCount(), keyframes_.size());
+      }
     }
     return assembler_.build();
   }
@@ -1317,9 +1388,11 @@ private:
     out.header.frame_id = map_frame_;
     out.header.stamp = now();
     map_pub_->publish(out);
-    RCLCPP_INFO(
-      get_logger(), "Published map: %zu points from %zu keyframes (%zu scans dropped, %zu refused)",
-      cloud->size(), keyframes_.size(), dropped_scans_.load(), dropped_diverged_.load());
+    if (verbose_) {
+      RCLCPP_INFO(
+        get_logger(), "Published map: %zu points from %zu keyframes (%zu scans dropped, %zu refused)",
+        cloud->size(), keyframes_.size(), dropped_scans_.load(), dropped_diverged_.load());
+    }
   }
 
   void publishCloud(const CloudT & cloud_in_own_frame, const Pose & pose)
@@ -1614,8 +1687,13 @@ private:
   std::atomic<std::size_t> dropped_scans_{0};
   std::size_t dropped_no_odom_ = 0;
 
-  // ----------------------------------------------------- pose sanity gate
+  // --------------------------------------------------- console volume
+  bool verbose_ = false;
+  rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr verbose_cb_;
+
+  // ------------------------------------------------- pose-jump watch
   bool sanity_enabled_ = true;
+  bool sanity_refuse_scans_ = false;  // false: report the jump, map it anyway
   double sanity_max_speed_ = 3.0;   // m/s
   double sanity_max_jump_ = 0.5;    // m between consecutive processed scans
   int sanity_reacquire_scans_ = 20;
@@ -1628,9 +1706,11 @@ private:
   bool have_prev_ = false;
   int reacquire_streak_ = 0;
   int refused_streak_ = 0;
+  int jump_streak_ = 0;  // report-only mode: consecutive jumps
   bool pending_reacquire_ = false;  // next keyframe's odom edge gets widened
   double graph_odom_sigma_t_ = 0.02;  // metres, from graph_odom_sigmas[0]
   std::atomic<std::size_t> dropped_diverged_{0};
+  std::atomic<std::size_t> dropped_jump_{0};  // jumps reported, scans still mapped
 
   std::mutex correction_mtx_;
   Pose correction_;

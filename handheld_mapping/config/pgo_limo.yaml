@@ -113,12 +113,14 @@ pgo_backend:
     save_extra_outputs: true
     scan_queue_size: 2
 
-    # Front-end divergence gate: refuse any scan whose pose implies more than
-    # sanity_max_speed or jumps more than sanity_max_jump from the last accepted
-    # pose, and WARN about it. Same guard and same reasoning as
-    # pgo_handheld.yaml -- read the long comment there. Kept identical here so
-    # the two chains can be compared on the same terms.
+    # Console: silent unless something needs a human. See pgo_handheld.yaml.
+    verbose: false
+
+    # Pose-jump watch, report-only: a jump beyond sanity_max_jump / speed prints
+    # a WARN and the scan is mapped anyway. Set sanity_refuse_scans: true to drop
+    # such scans instead (old behaviour). Same reasoning as pgo_handheld.yaml.
     sanity_enabled: true
+    sanity_refuse_scans: false
     sanity_max_speed: 3.0       # m/s
     sanity_max_jump: 0.5        # m
     sanity_reacquire_scans: 20
