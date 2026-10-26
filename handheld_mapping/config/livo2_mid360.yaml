@@ -1,0 +1,146 @@
+# FAST-LIVO2 on the handheld rig: Livox Mid-360 + Logitech C310.
+#
+# Derived from fast_LIVO2/config/mid360_lvi.yaml (the U-AMC fork's MID360
+# template), with three deliberate differences:
+#
+#   1. lid_topic / imu_topic come from our own adapter node, not straight from
+#      the driver. Two reasons (src/livox_livo2_adapter.cpp has the details):
+#      the MID360 preprocessor below reads PointCloud2 with an absolute-
+#      nanosecond `timestamp` field, which the driver's CustomMsg does not
+#      carry; and the driver's stamps have to be verified against the camera's
+#      host clock, which is exactly what that node does. img_time_offset stays
+#      0 because the adapter leaves the stamps in host time (it only shifts
+#      them if the LiDAR ever runs on PTP/GPS or device time).
+#
+#   2. extrinsic_T follows the *code* convention, not the datasheet. See the
+#      long note in fast_LIVO2/config/sim_mid360_lvi.yaml: voxel_map.cpp and
+#      IMU_Processing.cpp compute point_body = R * point_lidar + T, so T is the
+#      LiDAR origin expressed in the IMU frame. The datasheet/factory value is
+#      the opposite (IMU in LiDAR), hence the sign flip.
+#
+#   3. Rcl / Pcl are measured, not guessed: solved 2026-10-26 with FAST-Calib
+#      (four scenes of a 1400x1000 mm ArUco+four-hole board, 16 hole-centre
+#      pairs, weighted-Umeyama rms 11.7 mm; the four scenes solved
+#      independently agree to 1.98 deg / 71 mm, which is the honest accuracy
+#      of this rigid rig). They were also checked by projecting each scene's
+#      cloud into its camera frame: the holes and the board outline line up.
+#      Re-run ~/calib/fastcalib_offline/run_all.sh after moving either sensor.
+#
+# extrinsic_R: rotation from the LiDAR frame to the IMU frame. The Mid-360's
+# IMU axes are aligned with the LiDAR axes (factory), so identity.
+/**:
+  ros__parameters:
+    common:
+      img_topic: "/image_raw"
+      lid_topic: "/livox/lidar_livo"
+      imu_topic: "/livox/imu_sync"
+      img_en: 1
+      lidar_en: 1
+      ros_driver_bug_fix: false
+
+    extrin_calib:
+      # LiDAR origin in the IMU frame = -(0.011, 0.02329, -0.04412).
+      extrinsic_T: [-0.011, -0.02329, 0.04412]
+      extrinsic_R: [1., 0., 0.,
+                    0., 1., 0.,
+                    0., 0., 1.]
+      # p_cam = Rcl * p_lidar + Pcl, row-major.
+      # Physical read-out: the lidar looks ~46 deg below/forward of the camera
+      # axis (the two are on one bracket with the lidar pitched down), and its
+      # origin sits ~92 mm from the camera's (Pcl is the lidar origin in the
+      # camera frame: 23 mm right, 78 mm up, 41 mm in front).
+      Rcl: [-0.018041, -0.999638,  0.019937,
+             0.696558, -0.026871, -0.716997,
+             0.717274,  0.000952,  0.696791]
+      Pcl: [0.023352, -0.078240, 0.040920]
+
+    time_offset:
+      imu_time_offset: 0.0
+      # Image stamps are host time, lidar/imu are shifted to host time, so the
+      # remaining offset is only the camera's capture-to-stamp bias. Left at 0
+      # and refined online by rolling_shutter.td_estimate_enable.
+      img_time_offset: 0.0
+      exposure_time_init: 0.0
+
+    rolling_shutter:
+      enable: true            # C310 is a rolling-shutter sensor
+      # Total top-to-bottom readout time. For a 30 Hz rolling-shutter webcam
+      # this is close to one frame period (33 ms); the C310 does not report it.
+      # If a fast pan smears the map, this is the first knob to tune: set it to
+      # 0 and compare, then try 0.02 / 0.033 / 0.05.
+      tr_readout: 0.0333
+      anchor_factor: 0.5      # header.stamp = middle row
+      debug_print: false
+      td_estimate_enable: true   # online refinement of img_time_offset
+      td_step_alpha: 0.1
+      td_step_cap: 0.0005        # 0.5 ms per frame
+      td_lambda: 100.0
+      td_min_jac_sq: 1.0
+
+    preprocess:
+      point_filter_num: 1
+      filter_size_surf: 0.1
+      lidar_type: 8           # Livox Mid-360
+      scan_line: 4
+      blind: 0.1              # drop points closer than 10 cm
+
+    vio:
+      max_iterations: 5
+      outlier_threshold: 1000
+      img_point_cov: 100
+      patch_size: 8
+      patch_pyrimid_level: 4
+      normal_en: true
+      raycast_en: false       # true is slow and not needed for a handheld survey
+      inverse_composition_en: false
+      exposure_estimate_en: true
+      inv_expo_cov: 0.1
+
+    imu:
+      imu_en: true
+      imu_int_frame: 50       # 0.25 s gravity/gyro-bias init window: hold still
+      acc_cov: 0.1
+      gyr_cov: 0.1
+      b_acc_cov: 0.001
+      b_gyr_cov: 0.001
+
+    lio:
+      max_iterations: 5
+      dept_err: 0.02
+      beam_err: 0.15
+      min_eigen_value: 0.005
+      voxel_size: 0.5
+      max_layer: 2
+      max_points_num: 50
+      layer_init_num: [5, 5, 5, 5, 5]
+
+    local_map:
+      map_sliding_en: false   # keep the whole map in memory: offline-style run
+      half_map_size: 100
+      sliding_thresh: 8.0
+
+    uav:
+      imu_rate_odom: false
+      gravity_align_en: true  # defines camera_init by gravity at start: hold still
+
+    publish:
+      dense_map_en: true      # needed: the pose-graph back end eats /cloud_registered
+      pub_effect_point_en: false
+      pub_plane_en: false
+      pub_scan_num: 1
+      blind_rgb_points: 0.0
+
+    evo:
+      seq_name: "handheld_01"
+      pose_output_en: false
+
+    pcd_save:
+      pcd_save_en: false      # use /pgo/save_map instead (loop-closed map)
+      type: 0
+      colmap_output_en: false
+      filter_size_pcd: 0.15
+      interval: -1
+
+    image_save:
+      img_save_en: false
+      interval: 1

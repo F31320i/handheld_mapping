@@ -1,0 +1,32 @@
+# Camera intrinsics as vikit (fast_livo) sees them.
+#
+# Measured with camera_calibration on 2026-10-26, second round (61 samples,
+# checkerboard filling ~half the frame width). Artifacts and the analysis that
+# chose this round over the first one: docs/camera_calib_2026-10-26_round2/ and
+# section 4.1 of the package README.
+#
+# Regenerate with
+#   ros2 run handheld_mapping camera_calib_to_livo2.py --calib <file> --out <this file>
+#
+# cam_model must stay Pinhole: vikit's RationalPolynomial branch reads the
+# intrinsics with a local getParam() and silently comes back with zeros (the
+# process then dies with SIGFPE), while the Pinhole branch does the cross-node
+# read from parameter_blackboard that this launch provides. Distortion is
+# therefore ignored by LIVO2 -- cam_d* is recorded only. With this lens that
+# costs up to ~7 px at the corners of the frame (measured), which is fine for
+# fusion but is the first thing to suspect if LiDAR-camera alignment drifts at
+# the image edges.
+/**:
+  ros__parameters:
+    cam_model: Pinhole
+    cam_width: 640
+    cam_height: 480
+    scale: 1.0
+    cam_fx: 837.785540
+    cam_fy: 837.208400
+    cam_cx: 319.237410
+    cam_cy: 232.249420
+    cam_d0: 0.06884200
+    cam_d1: 0.35419800
+    cam_d2: -0.00548700
+    cam_d3: -0.00113800

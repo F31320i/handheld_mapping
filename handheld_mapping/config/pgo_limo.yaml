@@ -1,0 +1,125 @@
+# Pose-graph back end on the fast_limo chain (real hardware, no camera).
+#
+# Same node as mapping_livo2.py uses (vector_mapping/pgo_backend_node), same
+# factors and the same tuning; only the three topic names, the lidar extrinsic
+# and the deskew flag differ, because the front end is different.
+#
+#   * frontend_cloud_topic is /fast_limo/final_raw, not /fast_limo/pointcloud:
+#     the latter is already voxelised to the matcher's 0.1 m, which is coarser
+#     than keyframe_voxel (0.05) and map_voxel (0.05) below -- feeding it would
+#     throw away detail the back end is configured to keep. final_raw needs
+#     fast_limo's debug: true (it is on).
+#   * odom_topic is /fast_limo/state. No remap to /odometry/lio: nothing else
+#     in this chain publishes or consumes that name.
+#   * lidar_translation is zero, because base_link IS the LiDAR centre in this
+#     chain (see fast_limo_handheld.yaml). The field is only read for the raw
+#     scan source anyway.
+#   * deskew is off and must stay off: fast_limo already deskewed the sweep
+#     before it published it. (pgo_backend_node ignores the flag when
+#     cloud_source is frontend -- see the deskew=%s log line -- so this is
+#     documentation as much as configuration.)
+#
+# What it owns: with publish_correction_tf true this node is the only
+# publisher of map -> odom. The launch therefore drops the static identity
+# transform it uses when the back end is off. Until the first keyframe exists
+# there is no map -> odom at all (broadcastCorrection returns early rather than
+# publishing a placeholder), which is a few seconds after the front end starts.
+#
+# Outputs
+#   /pgo/map         optimised map, map frame, one point per map_voxel (0.05 m)
+#   /pgo/trajectory  optimised trajectory
+#   /pgo/loops       accepted loop closures, as a MarkerArray
+#   TF map -> odom
+#
+# Everything here is output-only: the back end never feeds the front end.
+pgo_backend:
+  ros__parameters:
+    cloud_source: frontend
+    frontend_cloud_topic: /fast_limo/final_raw
+    # Unused with cloud_source: frontend. Kept because the node declares it.
+    scan_topic: /livox/lidar_livo
+    odom_topic: /fast_limo/state
+    map_frame: map
+    odom_frame: odom
+
+    output_translation: [0.0, 0.0, 0.0]
+    trajectory_imu_offset: [0.0, 0.0, 0.0]
+
+    lidar_translation: [0.0, 0.0, 0.0]
+    lidar_rotation_rpy: [0.0, 0.0, 0.0]
+
+    deskew: false
+    odom_wait_timeout: 0.5
+
+    # Keyframes. The first scan is always accepted, so the map and the
+    # map -> odom transform appear as soon as the front end produces one --
+    # standing still is enough. After that, 0.20 m / 15 deg / 0.20 s.
+    keyframe_distance: 0.20    # m
+    keyframe_angle_deg: 15.0
+    keyframe_time: 0.20        # s
+    keyframe_max_time: 5.0     # force one after a gap, but only if moved
+    keyframe_voxel: 0.05
+    keyframe_min_points: 200
+
+    # Loop closure: radius gate on the current estimate, then GICP plus an
+    # inlier/fitness test. No place-recognition descriptor.
+    enable_loop_closure: true
+    loop_search_radius: 3.0
+    loop_max_yaw_deg: 180.0    # revisits are often walked the other way round
+    loop_min_time_gap: 20.0
+    loop_min_index_gap: 20
+    loop_min_path_gap: 5.0     # m walked between the two keyframes
+    loop_min_path_ratio: 1.5
+    loop_max_candidates: 3
+    loop_local_map_neighbors: 5
+    loop_icp_source_voxel: 0.10
+    loop_icp_target_voxel: 0.10
+    loop_icp_max_corr: 1.0     # inert for GICP (it uses its own 5 m threshold)
+    loop_icp_max_iter: 30
+    loop_inlier_dist: 0.20
+    loop_max_fitness: 0.10
+    loop_min_inlier_ratio: 0.60
+
+    # Pose graph, translation first: [x, y, z, roll, pitch, yaw].
+    graph_odom_sigmas: [0.008, 0.008, 0.008, 0.001, 0.001, 0.001]
+    graph_loop_sigmas: [0.03, 0.03, 0.03, 0.01, 0.01, 0.01]
+    graph_prior_sigmas: [0.001, 0.001, 0.001, 0.001, 0.001, 0.001]
+    graph_loop_huber: 1.0
+    graph_max_iterations: 50
+
+    # No absolute-position factor on this rig. Loop closure is the only thing
+    # that bounds drift, so revisit places instead.
+    enable_gnss_factor: false
+    gnss_topic: /odometry/gps
+    graph_gnss_sigmas: [0.02, 0.02, 0.5]
+    graph_gnss_robust: 0.0
+    gnss_match_window: 0.5
+    gnss_align_min_distance: 1.0
+
+    # Map output. Keyframes are fused as they arrive (incremental), so this
+    # period only controls how often the fused map is materialised and sent --
+    # not how much work the back end does, which no longer grows with the run.
+    map_voxel: 0.05
+    map_publish_period: 2.0    # s; only rebuilds when a keyframe was added
+    publish_correction_tf: true   # this node owns map -> odom
+    publish_current_scan: false
+
+    # Saving: `ros2 service call /pgo/save_map std_srvs/srv/Trigger` writes the
+    # optimised map to pcd_path (or $HOME/pgo_map_<stamp>.pcd when empty).
+    # save_extra_outputs also writes <name>_traj.tum and <name>_loops.csv next
+    # to it; save_on_shutdown writes them all when the node is Ctrl-C'd.
+    pcd_path: ""
+    save_on_shutdown: true
+    save_extra_outputs: true
+    scan_queue_size: 2
+
+    # Front-end divergence gate: refuse any scan whose pose implies more than
+    # sanity_max_speed or jumps more than sanity_max_jump from the last accepted
+    # pose, and WARN about it. Same guard and same reasoning as
+    # pgo_handheld.yaml -- read the long comment there. Kept identical here so
+    # the two chains can be compared on the same terms.
+    sanity_enabled: true
+    sanity_max_speed: 3.0       # m/s
+    sanity_max_jump: 0.5        # m
+    sanity_reacquire_scans: 20
+    sanity_reacquire_jump: 2.0  # m

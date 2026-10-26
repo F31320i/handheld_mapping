@@ -1,0 +1,26 @@
+# Map accumulator, FAST-LIVO2 edition.
+#
+# Identical to map_accumulator.yaml except for the input cloud: FAST-LIVO2
+# already registers every scan into camera_init and publishes it as
+# /cloud_registered, so nothing is transformed here either. /cloud_registered
+# is dense (publish.dense_map_en: true, i.e. the undistorted full-rate scan
+# before the 0.1 m down-sample), so the accumulator's own voxel grid does all
+# of the thinning.
+map_accumulator:
+  ros__parameters:
+    input_cloud_topic: /cloud_registered
+    # Bridged LIVO2 odometry (base_link pose in odom), published by
+    # livo2_odom_bridge. Only used for the trajectory.
+    input_odom_topic: /odometry/lio
+
+    output_map_topic: /vector_mapping/map_accumulated
+    output_path_topic: /vector_mapping/trajectory
+
+    # Empty: adopt whichever frame the scans arrive in, which is FAST-LIVO2's
+    # own world frame, camera_init.
+    map_frame: ""
+
+    voxel_leaf: 0.05
+    publish_rate: 1.0
+    max_points: 20000000
+    queue_depth: 20

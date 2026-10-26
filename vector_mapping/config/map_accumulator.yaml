@@ -1,0 +1,32 @@
+map_accumulator:
+  ros__parameters:
+    # Already registered into fast_limo's world frame, so nothing is
+    # transformed here: the scans are simply concatenated.
+    input_cloud_topic: /fast_limo/pointcloud
+    # /fast_limo/state, remapped by localization.launch.xml.
+    input_odom_topic: /odometry/lio
+
+    output_map_topic: /vector_mapping/map_accumulated
+    output_path_topic: /vector_mapping/trajectory
+
+    # Empty: adopt whichever frame the scans arrive in, which is fast_limo's
+    # own world frame (fast_limo.yaml sets world: odom).
+    map_frame: ""
+
+    # Accumulation resolution, in metres. Deliberately finer than fast_limo's
+    # own output: /fast_limo/pointcloud is already voxelised at 0.1 m per scan
+    # (filters.voxelGrid.leafSize), so 0.1 here would make successive scans
+    # collapse into the same cells and keep only one point each. A finer grid
+    # lets overlapping scans contribute their own points instead, which is
+    # what makes the accumulated map denser. It does not add sub-0.1 m detail
+    # within a single scan - that is fixed upstream.
+    voxel_leaf: 0.05
+
+    # How often the accumulated map is republished to RViz.
+    publish_rate: 1.0
+
+    # Hard cap on the number of voxels, to keep memory bounded. 0 disables it.
+    max_points: 20000000
+
+    # Scans buffered between the subscription callback and the worker thread.
+    queue_depth: 20

@@ -1,0 +1,239 @@
+# Pose-graph back end for FAST-LIVO2.
+#
+# Inputs
+#   /cloud_registered  FAST-LIVO2's per-VIO-frame cloud: camera-fused, coloured,
+#                      already motion-compensated with the IMU, expressed in
+#                      camera_init (numerically the same frame /odometry/lio
+#                      uses). This is the default source -- it is the same point
+#                      set map_accumulator turns into the map you see without
+#                      the back end, so a rebuilt map has the same density and
+#                      colour, and only the poses change.
+#   /livox/lidar_be    alternative: the raw Livox sweep with per-point
+#                      timestamps relative to the header stamp, in seconds
+#                      (pcd_timestamp_injector, abs_ns:=false,
+#                      scan_period:=0.001 in simulation). 360 deg, no colour,
+#                      far sparser on every surface.
+#   /odometry/lio      base_link pose in "odom" from livo2_odom_bridge.
+#
+# Nothing here feeds back into the front end: the map, the trajectory and the
+# map -> odom correction are outputs, not inputs.
+
+pgo_backend:
+  ros__parameters:
+    cloud_source: frontend          # frontend | lidar
+    frontend_cloud_topic: /cloud_registered
+    scan_topic: /livox/lidar_be     # only used when cloud_source: lidar
+    odom_topic: /odometry/lio
+    map_frame: map
+    odom_frame: odom
+
+    # Everything this node publishes (map, trajectory, loop markers, saved PCD)
+    # is lifted by this vector, which must equal the static
+    # odom -> camera_init transform in sim_min_livo2.launch.xml.
+    #
+    # The back end works in LIVO2's numbers: /odometry/lio carries base_link
+    # poses whose values are camera_init coordinates (the bridge relabels the
+    # frame, it does not subtract the IMU mount offset), and a front-end cloud
+    # converted to the body frame and back reproduces camera_init values
+    # unchanged. Publishing those as "map" skips the +0.5003 m that TF adds for
+    # every message LIVO2 stamps camera_init, so the back end's map and path
+    # ended up 0.5 m below the front end's own cloud and trajectory while
+    # agreeing in x/y. Set this to [0, 0, 0] if that static transform ever goes
+    # away.
+    output_translation: [0.0098146, 0.02329, 0.5002583]
+
+    # base_link -> IMU, added on top of output_translation to /pgo/trajectory
+    # and /pgo/loops only (the map is untouched). It exists so the trajectory
+    # can optionally be drawn at the same point on the robot as a path whose
+    # source publishes the IMU body pose, e.g. FAST-LIVO2's own /path.
+    #
+    # [0, 0, 0] = draw the keyframe pose itself, i.e. base_link. That is what
+    # everything else in this stack now uses: /path_base is the LIVO2
+    # trajectory converted down to base_link in sim_min_livo2.launch.xml, and
+    # /ground_truth/path has z_offset 0. All three then overlay for a
+    # like-for-like comparison. Set it back to [0.0098146, 0.02329, 0.5002583]
+    # to draw the IMU trajectory instead.
+    trajectory_imu_offset: [0.0, 0.0, 0.0]
+
+    # base_link -> livox_lidar, straight from the URDF chain and identical to
+    # fast_limo's lidar extrinsic (vector.urdf.xacro: livox_sensor at z 0.506
+    # with a +45 deg pitch, livox_lidar 0.047 m further along the sensor z
+    # axis).
+    #   t = (0, 0, 0.506) + Ry(45 deg) * (0, 0, 0.047) = (0.0332, 0, 0.5392)
+    #   R = Ry(45 deg)
+    lidar_translation: [0.033234, 0.0, 0.539234]
+    lidar_rotation_rpy: [0.0, 0.7853981634, 0.0]
+
+    # Motion compensation. The front end's own odometry is the motion prior, so
+    # no IMU is used here at all. In simulation the whole sweep is rendered in
+    # one tick (point timestamps span 1 ms), which makes this a no-op by
+    # construction; it is what makes the same code work on a real 100 ms
+    # Mid-360 sweep.
+    deskew: true
+    odom_wait_timeout: 0.5    # s to wait for odometry covering the scan end
+
+    # Keyframe selection.
+    #
+    # Tuned for cloud_source: frontend. A front-end cloud only covers the
+    # camera FOV, so consecutive frames overlap a lot and the sampling has to be
+    # finer than with raw 360 deg sweeps to keep the rebuilt map from showing
+    # gaps along the path. With cloud_source: lidar, 0.5 m / 0.5 s is a better
+    # trade-off (the sweeps are much bigger and each one already covers the
+    # room).
+    keyframe_distance: 0.15   # m
+    keyframe_angle_deg: 10.0  # deg
+    keyframe_time: 0.1        # s, minimum spacing
+    # Force a keyframe after a long gap, but only once the robot has actually
+    # moved (5 cm / 1 deg). A parked robot therefore produces no keyframes at
+    # all, and the trajectory simply stops growing until it drives again.
+    keyframe_max_time: 5.0    # s
+    keyframe_voxel: 0.05      # m, resolution of the stored scan
+    keyframe_min_points: 200
+
+    # Loop closure. Stage 1 is a radius test on the current estimate, stage 2 is
+    # GICP plus an inlier/fitness check; there is no place-recognition
+    # descriptor.
+    enable_loop_closure: true
+    loop_search_radius: 3.0     # m between the two prior poses
+    # No heading gate in effect: a corridor revisit is normally driven with the
+    # robot pointing the other way, so a tight yaw window would reject exactly
+    # the loops we want. GICP plus the inlier/fitness test is the real filter,
+    # and loop_detector additionally refuses a correction that disagrees with
+    # the prior by more than max_icp_*.
+    loop_max_yaw_deg: 180.0
+    loop_min_time_gap: 20.0     # s
+    loop_min_index_gap: 15      # keyframes
+    # Being close is not the same as coming back. On a straight run the 15
+    # keyframes "apart" candidate is 2.25 m down the same corridor, which used
+    # to be accepted as a loop on every keyframe: each one re-ran the whole
+    # pose graph on pure GICP noise and moved map -> odom by a few cm, which is
+    # the back-and-forth visible on the robot's TF. A candidate now has to be
+    # reached by a real detour.
+    loop_min_path_gap: 3.0      # m travelled between the two keyframes
+    loop_min_path_ratio: 1.5    # travelled / straight-line distance
+    loop_max_candidates: 3      # GICP attempts per new keyframe
+    loop_local_map_neighbors: 5 # keyframes fused into the registration target
+    loop_icp_source_voxel: 0.10
+    loop_icp_target_voxel: 0.10
+    # Inert for GICP: it uses its own internal corr_dist_threshold_ (5 m) and
+    # does not route setMaxCorrespondenceDistance into it. Kept because the
+    # value is still plumbed through, but do not expect changing it to do
+    # anything.
+    loop_icp_max_corr: 1.0
+    loop_icp_max_iter: 30
+    loop_inlier_dist: 0.20      # m
+    loop_max_fitness: 0.10      # m, mean residual over the inliers
+    loop_min_inlier_ratio: 0.60
+
+    # Pose graph. Sigmas are translation first: [x, y, z, roll, pitch, yaw].
+    #
+    # These two lines decide how much a loop closure is allowed to move the
+    # front end's trajectory, and they are the difference between "the back end
+    # refines" and "the back end fights the front end".
+    #
+    # Odom edges are per keyframe (0.15 m). The old values -- 2 cm and 1.1 deg
+    # per edge -- claimed each step could be off by 13% of its own length, so
+    # 70 edges looked like ~17 cm / 3.5 deg of accumulated slack. Any accepted
+    # loop, however noisy, then dominated: one genuine revisit rotated the
+    # whole graph by 0.57 deg, which is 20 cm at 10 m from the origin, and the
+    # optimised end pose landed 15.9 cm from ground truth where the raw front
+    # end was 12.1 cm. LIVO2 simply is not that bad.
+    #
+    # Now: 5 mm / 0.06 deg per keyframe (3% of the spacing), and 3 cm / 0.6 deg
+    # per loop -- the latter matches the residual GICP actually measures
+    # (fitness 0.024-0.030 m on accepted loops). Over 70 edges that is ~4 cm /
+    # 0.5 deg accumulated against a 3 cm / 0.6 deg loop, so the two sides carry
+    # comparable weight: a genuine disagreement is largely absorbed (the loop
+    # moves roughly two thirds of the way to it) without a single noisy loop
+    # being able to swing the whole graph.
+    #
+    # Do not read "the correction came out at 2 mm" as the sigmas being timid.
+    # On the tested runs LIVO2's own loop residual was 1-3 cm, i.e. the front
+    # end and the loop agreed, and 2 mm is the right answer for agreeing data.
+    # Authority only shows up once something actually drifts.
+    graph_odom_sigmas: [0.005, 0.005, 0.008, 0.001, 0.001, 0.001]
+    graph_loop_sigmas: [0.03, 0.03, 0.03, 0.01, 0.01, 0.01]
+    graph_prior_sigmas: [0.001, 0.001, 0.001, 0.001, 0.001, 0.001]
+    graph_loop_huber: 1.0
+    graph_max_iterations: 50
+
+    # ---------------------------------------------------------- GNSS-like anchor
+    #
+    # A low-frequency, high-precision absolute position measurement, turned
+    # into a PoseTranslationPrior on the keyframe it belongs to. Same role the
+    # GNSS fix plays for beluga: it does not track, it *corrects*, and every
+    # accepted fix moves map -> odom in one visible step.
+    #
+    # Where the measurement comes from is deliberately not this node's
+    # business: it subscribes to a nav_msgs/Odometry in whatever frame the
+    # upstream chain produces (sim_min_livo2 runs gnss_fix_mock ->
+    # gnss_transform_fixposition, so this is the map frame, 1 Hz, sigma 2 cm).
+    # That is also why the factor needs no calibration on the real robot: the
+    # only thing it has to learn is the constant rigid transform between that
+    # frame and camera_init, and it learns it from the first few fixes against
+    # the front end's own odometry (see processPendingGnss).
+    enable_gnss_factor: true
+    gnss_topic: /odometry/gps
+    # [x, y, z]. z is deliberately 10x looser than x/y: a 2D vehicle gets no
+    # usable height from a fix, so the vertical channel is pure noise and the
+    # only thing a tight z sigma does is drag the graph up and down with it.
+    #
+    # Measured on the depot run with z at 0.05 (i.e. trusting the mock's 5 cm
+    # altitude noise): every anchor innovation had a z component of 3-11 cm on
+    # a robot whose height never changes, and map -> odom wobbled +3 cm -> 0 in
+    # z over the first 15 anchors, which is a vertical smear through the whole
+    # rebuilt map. At 0.5 the z target is still bounded (so a loop closure
+    # cannot tip the map out of the floor plane) but the noise no longer drives
+    # it. Do not tighten this back without a source that measures height.
+    graph_gnss_sigmas: [0.02, 0.02, 0.5]
+    # Robust kernel width in sigmas, 0 = plain Gaussian.
+    #
+    # THIS IS NOT graph_loop_huber. A loop factor is *supposed* to agree with
+    # the estimate; an anchor is *supposed* to disagree with it, by exactly the
+    # drift that has accumulated since the last fix. Robustifying it at a few
+    # sigmas would down-weight the very residual it exists to remove, and the
+    # correction would quietly stop happening. Left at 0 while the upstream fix
+    # is trustworthy; raise it only if the source can produce gross outliers.
+    graph_gnss_robust: 0.0
+    # A fix is attached to the keyframe whose stamp is closest, within this
+    # many seconds. Wider than the 1 s fix period on purpose: keyframes are
+    # created on motion, so a parked robot can leave a several-second gap.
+    gnss_match_window: 0.5
+    # How far the robot has to drive before the alignment is fitted and the
+    # first anchor is applied. The frame offset is a least-squares rigid fit
+    # over every fix collected so far (at least three), and it needs the fixes
+    # to be spread out: a two-point fit over a 1 m baseline put the heading
+    # ~3 deg off, which is a 15 cm pull at 3 m. Read as an RMS spread about the
+    # centroid, so 1.0 m here means "drove about 1 m in a spread-out way".
+    gnss_align_min_distance: 1.0
+
+    # Map output.
+    map_voxel: 0.05
+    # Seconds between map rebuilds, and only when a keyframe was added. A full
+    # rebuild is O(all keyframes) and runs on the scan thread, so this is also
+    # the floor on how much of the node's time goes to re-assembling the map.
+    # 5 s made the map visibly trail the robot; at 1 s a 60-keyframe rebuild
+    # does not drop a single scan (measured in depot).
+    map_publish_period: 1.0     # s
+    publish_correction_tf: true # broadcast map -> odom from the optimised graph
+    publish_current_scan: false # /pgo/current_scan, for checking the deskew
+
+    # Front-end divergence gate. When the LIO/VIO front end loses its lock it
+    # does not stop publishing: it integrates the IMU alone and the pose runs
+    # away at tens/hundreds of m/s. Any scan whose pose implies more than
+    # sanity_max_speed, or moves more than sanity_max_jump from the last pose
+    # accepted, is refused (no keyframe, no fusion, no loop search) and logged
+    # as a WARN. Back-end band-aid only: it cannot fix or restart the front end,
+    # it just keeps a divergence out of the delivered map.
+    # Re-acquisition: one discrete step followed by normal motion is picked up
+    # again after sanity_reacquire_scans sane scans, provided the pose never
+    # moved more than sanity_reacquire_jump from the last accepted one.
+    sanity_enabled: true
+    sanity_max_speed: 3.0       # m/s
+    sanity_max_jump: 0.5        # m
+    sanity_reacquire_scans: 20
+    sanity_reacquire_jump: 2.0  # m
+
+    pcd_path: ""
+    save_on_shutdown: false
+    scan_queue_size: 2

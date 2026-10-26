@@ -1,0 +1,46 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>handheld_mapping</name>
+  <version>0.1.0</version>
+  <description>
+    Handheld mapping rig: Livox Mid-360 + USB camera + FAST-LIVO2 + the
+    pose-graph back end. Launch/config/script package plus one compiled node,
+    livox_livo2_adapter (the CustomMsg -> PointCloud2 bridge FAST-LIVO2 needs);
+    all the heavy lifting is done by livox_ros_driver2, usb_cam, fast_livo,
+    vector_localization (livo2_odom_bridge) and vector_mapping (pgo_backend).
+  </description>
+  <maintainer email="local@todo.todo">local</maintainer>
+  <license>BSD</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <build_depend>rclcpp</build_depend>
+  <build_depend>sensor_msgs</build_depend>
+  <build_depend>livox_ros_driver2</build_depend>
+  <exec_depend>rclcpp</exec_depend>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>livox_ros_driver2</exec_depend>
+  <exec_depend>usb_cam</exec_depend>
+  <exec_depend>demo_nodes_cpp</exec_depend>
+  <exec_depend>fast_livo</exec_depend>
+  <exec_depend>vector_localization</exec_depend>
+  <exec_depend>vector_mapping</exec_depend>
+  <exec_depend>camera_calibration</exec_depend>
+  <exec_depend>rqt_image_view</exec_depend>
+  <exec_depend>rviz2</exec_depend>
+  <exec_depend>cv_bridge</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>std_srvs</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>ros2bag</exec_depend>
+  <exec_depend>v4l-utils</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

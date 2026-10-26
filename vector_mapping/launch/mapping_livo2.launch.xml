@@ -1,0 +1,20 @@
+<launch>
+  <!--
+    Mapping back-end skeleton, FAST-LIVO2 edition. Same single accumulator as
+    mapping.launch.xml, but fed by /cloud_registered (LIVO2's already
+    registered dense scan) instead of /fast_limo/pointcloud.
+  -->
+  <arg name="robot_name" default="default"/>
+  <arg name="log_level" default="info"/>
+  <arg name="use_sim_time" default="true"/>
+
+  <node
+    pkg="vector_mapping"
+    exec="map_accumulator_node"
+    name="map_accumulator"
+    output="screen"
+    args="--ros-args --log-level $(var log_level)">
+    <param name="use_sim_time" value="$(var use_sim_time)"/>
+    <param from="$(find-pkg-share vector_mapping)/config/map_accumulator_livo2.yaml"/>
+  </node>
+</launch>

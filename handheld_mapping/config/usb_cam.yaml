@@ -1,0 +1,40 @@
+# Logitech C310 (046d:081b) on /dev/video0.
+#
+# 640x480 @ 30 Hz YUYV, published as sensor_msgs/Image encoding
+# "yuv422_yuy2". FAST-LIVO2 converts it with cv_bridge::toCvCopy(msg, "bgr8"),
+# which handles yuv422_yuy2 (verified on this machine), so no conversion node
+# is needed. MJPG (pixel_format: mjpeg2rgb) also works and gives rgb8 directly,
+# but measured higher arrival latency (0.96 s versus 0.47 s for YUYV in one
+# session; YUYV measured 0.95 s in another, so compare on your own setup before
+# believing the absolute numbers). What matters is that the delay is constant:
+# LIVO2 waits for the image that belongs to each sweep.
+#
+# Frame id: camera_link. Nothing publishes a TF for it on this rig; it exists
+# only to label the image. The LiDAR-camera transform lives in the LIVO2
+# config (Rcl/Pcl), not in TF.
+#
+# The V4L2 controls this camera actually has are set by
+# scripts/set_camera_controls.sh before this node starts. Do NOT list any
+# usb_cam control parameter here: its names (auto_white_balance, autoexposure,
+# autofocus, white_balance -> white_balance_temperature) either do not exist on
+# the C310 ("unknown control ..." on every start) or fail with EACCES when they
+# do, because the camera rejects a manual control while its auto mode is on --
+# measured: white_balance 4000 -> "VIDIOC_S_CTRL: failed: Permission denied".
+# Even -1 ("leave alone") does not help: usb_cam still writes it.
+#
+# Frame rate caveat: with the camera's own auto exposure and
+# exposure_dynamic_framerate left alone, this device drops to 24 Hz in dim
+# light (measured) and the stamp lateness grows with it.
+# set_camera_controls.sh fixes exposure AND sets exposure_dynamic_framerate=0,
+# which restores 29.7 Hz -- run it before mapping.
+/**:
+  ros__parameters:
+    video_device: "/dev/video0"
+    image_width: 640
+    image_height: 480
+    framerate: 30.0
+    pixel_format: "yuyv"        # -> yuv422_yuy2
+    io_method: "mmap"
+    frame_id: "camera_link"
+    camera_name: "c310"
+    camera_info_url: ""         # set after camera_calibration, see README

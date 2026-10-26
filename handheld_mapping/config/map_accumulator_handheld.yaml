@@ -1,0 +1,17 @@
+# Live accumulated map from FAST-LIVO2's registered cloud.
+#
+# This is the raw front-end map -- no loop closure. /pgo/map is the corrected
+# one. Keeping both means a bad loop closure can be told apart from a bad front
+# end just by looking at the two.
+map_accumulator:
+  ros__parameters:
+    input_cloud_topic: /cloud_registered
+    input_odom_topic: /odometry/lio
+    output_map_topic: /handheld/map_raw
+    output_path_topic: /handheld/trajectory_raw
+    # Empty: adopt whatever frame the scans carry (camera_init).
+    map_frame: ""
+    voxel_leaf: 0.05
+    publish_rate: 1.0
+    max_points: 20000000
+    queue_depth: 20

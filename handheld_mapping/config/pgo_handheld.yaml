@@ -1,0 +1,163 @@
+# Pose-graph back end on the handheld rig.
+#
+# Same node as the simulation (vector_mapping/pgo_backend_node), same factors,
+# but the frame bookkeeping is simpler here because base_link is the LiDAR IMU
+# frame and there is no simulated 0.5 m lift:
+#
+#   * output_translation [0,0,0]: LIVO2's camera_init and odom coincide.
+#   * trajectory_imu_offset [0,0,0]: the keyframe pose *is* base_link.
+#   * enable_gnss_factor false: no absolute reference on this rig; do not buy
+#     one with GPS. Loop closure is the only thing that bounds drift, so
+#     revisit places instead.
+#
+# Inputs
+#   /cloud_registered  LIVO2's per-VIO-frame cloud, camera_init, coloured and
+#                      already motion-compensated (dense_map_en: true).
+#   /odometry/lio      base_link pose in odom, from livo2_odom_bridge.
+#
+# Everything here is output-only: the back end never feeds the front end.
+pgo_backend:
+  ros__parameters:
+    cloud_source: frontend
+    frontend_cloud_topic: /cloud_registered
+    # Unused with cloud_source: frontend, and there is a type catch: this
+    # channel is PointCloud2-only, while the raw Mid-360 topic is CustomMsg
+    # (the adapter's /livox/lidar_livo exists only if the lidar adapter runs).
+    # Keep the front-end source.
+    scan_topic: /livox/lidar_livo
+    odom_topic: /odometry/lio
+    map_frame: map
+    odom_frame: odom
+
+    output_translation: [0.0, 0.0, 0.0]
+    trajectory_imu_offset: [0.0, 0.0, 0.0]
+
+    # LiDAR origin in base_link (= IMU) and its rotation: used only for the
+    # lidar cloud source, kept consistent with LIVO2's extrinsic_T anyway.
+    lidar_translation: [-0.011, -0.02329, 0.04412]
+    lidar_rotation_rpy: [0.0, 0.0, 0.0]
+
+    # A real Mid-360 sweep takes ~100 ms, so this is not a no-op any more: the
+    # points are deskewed with the front end's own odometry as the motion
+    # prior (no IMU is used here).
+    deskew: true
+    odom_wait_timeout: 0.5
+
+    # Keyframes. The front-end cloud covers the camera FOV only, so spacing is
+    # tighter than a 360 deg sweep would need -- but coarser than the
+    # simulation's 0.15 m, because a handheld survey walks far: the map is
+    # rebuilt from every keyframe, and 5 keyframes/s over a 10-minute walk
+    # would be thousands of clouds per rebuild.
+    keyframe_distance: 0.20    # m
+    keyframe_angle_deg: 15.0
+    keyframe_time: 0.20        # s
+    keyframe_max_time: 5.0     # force one after a gap, but only if moved
+    keyframe_voxel: 0.005
+    keyframe_min_points: 200
+
+    # Loop closure: radius gate on the current estimate, then GICP plus an
+    # inlier/fitness test. No place-recognition descriptor.
+    enable_loop_closure: true
+    loop_search_radius: 3.0
+    loop_max_yaw_deg: 180.0    # revisits are often walked the other way round
+    loop_min_time_gap: 20.0
+    loop_min_index_gap: 20
+    loop_min_path_gap: 5.0     # m walked between the two keyframes
+    loop_min_path_ratio: 1.5
+    loop_max_candidates: 3
+    loop_local_map_neighbors: 5
+    loop_icp_source_voxel: 0.10
+    loop_icp_target_voxel: 0.10
+    loop_icp_max_corr: 1.0     # inert for GICP (it uses its own 5 m threshold)
+    loop_icp_max_iter: 30
+    loop_inlier_dist: 0.20
+    loop_max_fitness: 0.10
+    loop_min_inlier_ratio: 0.60
+
+    # Pose graph, translation first: [x, y, z, roll, pitch, yaw].
+    # Odom edges are per keyframe: 8 mm / 0.06 deg at 0.2 m spacing (4%), loop
+    # edges match the residual GICP actually measures. Same balance as the
+    # simulated tuning: a genuine loop moves the graph, a noisy one cannot
+    # swing it.
+    graph_odom_sigmas: [0.008, 0.008, 0.008, 0.001, 0.001, 0.001]
+    graph_loop_sigmas: [0.03, 0.03, 0.03, 0.01, 0.01, 0.01]
+    graph_prior_sigmas: [0.001, 0.001, 0.001, 0.001, 0.001, 0.001]
+    graph_loop_huber: 1.0
+    graph_max_iterations: 50
+
+    # No absolute-position factor on this rig. See the header comment.
+    enable_gnss_factor: false
+    gnss_topic: /odometry/gps
+    graph_gnss_sigmas: [0.02, 0.02, 0.5]
+    graph_gnss_robust: 0.0
+    gnss_match_window: 0.5
+    gnss_align_min_distance: 1.0
+
+    # Map output. This is the resolution of the delivered PCD: one point per
+    # cell (position/intensity/colour averaged inside it). keyframe_voxel must
+    # be <= map_voxel or the keyframe scans cap the map again.
+    #
+    # It is NOT limited by the front end. preprocess.filter_size_surf (0.1)
+    # only downsamples the cloud the LIO matcher registers; with
+    # dense_map_en: true /cloud_registered carries feats_undistort, i.e. every
+    # undistorted point of the sweep. So this is purely a back-end choice and
+    # lowering it cannot affect localization.
+    #
+    # 0.005 m = 5 mm: essentially no cell merging at all, every point of every
+    # keyframe is kept where the front end put it. Baseline to beat, measured
+    # on the 2026-10-26 16:55 session (239 keyframes, 273 poses, 132 loops,
+    # map_voxel 0.02): 157 424 points over 5.7 x 6.1 x 3.2 m, nearest-neighbour
+    # median 24.6 mm, p90 45 mm, 69% of points further than 20 mm from their
+    # neighbour. i.e. the 20 mm grid was NOT what made that map coarse -- the
+    # keyframes only carried 700-1350 points each. Going to 5 mm cannot invent
+    # points; expect ~1.3-1.5x, and because 5 mm is below the Mid-360's ~20 mm
+    # range noise, repeated passes over one wall will stop merging into one
+    # surface and start showing as a fuzzy shell instead of a thin sheet.
+    # If the walls look thicker rather than sharper, step back to 0.01.
+    map_voxel: 0.005
+    map_publish_period: 2.0    # s; only rebuilds when a keyframe was added
+    publish_correction_tf: true   # this node owns map -> odom
+    publish_current_scan: false
+
+    # Saving: `ros2 service call /pgo/save_map std_srvs/srv/Trigger` writes the
+    # optimised map to pcd_path (or $HOME/pgo_map_<stamp>.pcd when empty).
+    # save_extra_outputs also writes <name>_traj.tum (optimised keyframe poses,
+    # TUM format) and <name>_loops.csv (accepted loop closures) next to it --
+    # the map alone cannot be compared against a reference later.
+    # save_on_shutdown is the safety net: a survey that ends with Ctrl-C
+    # instead of the service call still gets written.
+    pcd_path: ""
+    save_on_shutdown: true
+    save_extra_outputs: true
+    scan_queue_size: 2
+
+    # Front-end divergence gate. This is the guard for the failure mode seen on
+    # 2026-10-26: FAST-LIVO2 loses its VIO lock ("effective feature num" falls to
+    # 0, "No point!!!"), falls back to integrating the IMU alone and the pose
+    # runs away -- hundreds of m/s, ending kilometres from the room. It never
+    # recovers and it never says so.
+    #
+    # Without this gate those poses become keyframes: clouds of noise fused into
+    # the map where the rig never was, plus odom edges dragging the graph. With
+    # it, such a scan is refused (no keyframe, no fusion, no loop search) and a
+    # WARN prints how far and how fast the front end moved. The map stops
+    # growing -- which is the correct outcome, there is nothing left to map --
+    # and the terminal says why within a second.
+    #
+    # It is a back-end band-aid: it cannot fix, restart or even tell you where to
+    # walk back to. Nothing in the front end is touched.
+    #
+    # Thresholds: 0.5 m between two processed scans is ~5 m/s at 10 Hz and
+    # 15 m/s at 30 Hz -- both far above a handheld walk (1.5 m/s), and the jump
+    # limit binds first for a step-like failure. Lower sanity_max_speed if the
+    # operator moves slowly and you want to catch a slow drift earlier.
+    sanity_enabled: true
+    sanity_max_speed: 3.0       # m/s
+    sanity_max_jump: 0.5        # m
+    # One discrete step (a dropped frame, a yank on the rig) must not end the
+    # survey: after this many consecutive sane scan-to-scan steps the gate
+    # adopts the new position, as long as it is within sanity_reacquire_jump of
+    # the last accepted pose. A genuinely diverged front end is either still
+    # flying (step insane) or far away (offset insane), so it never qualifies.
+    sanity_reacquire_scans: 20
+    sanity_reacquire_jump: 2.0  # m

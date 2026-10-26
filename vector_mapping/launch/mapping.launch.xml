@@ -1,0 +1,25 @@
+<launch>
+  <!--
+    Mapping back-end skeleton. For now this is a single accumulator node that
+    rebuilds fast_limo's map externally from the scans fast_limo already
+    publishes; loop closure and pose-graph optimisation will be added on top of
+    it later.
+
+    It writes to fast_limo's own world frame, so it starts at the same origin as
+    fast_limo's octree: base_link's pose when fast_limo came up, which is
+    identity because the robot is at rest at simulation start.
+  -->
+  <arg name="robot_name" default="default"/>
+  <arg name="log_level" default="info"/>
+  <arg name="use_sim_time" default="true"/>
+
+  <node
+    pkg="vector_mapping"
+    exec="map_accumulator_node"
+    name="map_accumulator"
+    output="screen"
+    args="--ros-args --log-level $(var log_level)">
+    <param name="use_sim_time" value="$(var use_sim_time)"/>
+    <param from="$(find-pkg-share vector_mapping)/config/map_accumulator.yaml"/>
+  </node>
+</launch>

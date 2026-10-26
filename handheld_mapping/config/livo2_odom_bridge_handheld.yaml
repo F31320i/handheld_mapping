@@ -1,0 +1,26 @@
+# On this rig "base_link" *is* the LiDAR's IMU body frame, so the bridge is a
+# pure relabelling: /aft_mapped_to_init (camera_init -> aft_mapped, the IMU
+# body pose) becomes /odometry/lio (odom -> base_link). No lever arm, no
+# rotation.
+#
+# That choice is what makes pgo_backend's output_translation [0,0,0]
+# correct: LIVO2's world frame (camera_init) and odom coincide, so the
+# back end's map, trajectory and TF need no vertical lift (unlike the
+# simulation, where base_link sits 0.5 m above the IMU).
+#
+# Do not add the LiDAR-IMU extrinsic here. That lever arm is a property of the
+# *sensor* pair and is already applied inside LIVO2 (extrin_calib.extrinsic_T).
+# Adding it here as well would double-count it.
+livo2_odom_bridge:
+  ros__parameters:
+    base_to_imu_translation: [0.0, 0.0, 0.0]
+    base_to_imu_roll: 0.0
+    base_to_imu_pitch: 0.0
+    base_to_imu_yaw: 0.0
+
+    input_topic: /aft_mapped_to_init
+    output_topic: /odometry/lio
+    output_frame: odom
+    base_frame: base_link
+
+    lift_tf_to_odom: false

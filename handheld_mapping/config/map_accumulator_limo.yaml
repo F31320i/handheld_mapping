@@ -1,0 +1,31 @@
+# Live accumulated map from fast_limo's registered scan.
+#
+# This is the front-end map with no loop closure at all -- the "like in the
+# simulation" path the user asked for: whatever the front end registers gets
+# dropped into a voxel hash and republished. If the map doubles back on itself,
+# the two passes stay where the front end put them; /pgo/map is the corrected
+# version (not run in this launch).
+map_accumulator:
+  ros__parameters:
+    # /fast_limo/final_raw is the deskewed scan transformed into the world frame
+    # WITHOUT the 0.1 m matcher voxel grid, so the map density here is set by
+    # voxel_leaf below rather than by what the matcher needed. It requires
+    # fast_limo's `debug: true` (as shipped in fast_limo_handheld.yaml).
+    # Swap to /fast_limo/pointcloud if CPU gets tight: same frame, 0.1 m grid.
+    input_cloud_topic: /fast_limo/final_raw
+    input_odom_topic: /fast_limo/state
+    output_map_topic: /handheld/map_raw
+    output_path_topic: /handheld/trajectory_raw
+    # Empty: adopt whatever frame the scans carry (fast_limo's world, i.e. odom).
+    map_frame: ""
+    voxel_leaf: 0.05
+    publish_rate: 1.0
+    max_points: 20000000
+    queue_depth: 20
+    # Throw away the first 15 s of scans, counted from the first scan that
+    # arrives (not from node start, so the 5 s IMU calibration gate does not eat
+    # into it). fast_limo needs a moment after that gate to converge, and the
+    # operator is usually still moving the rig into position; a voxel grid never
+    # takes a bad scan back out, so those scans stay as ghosts forever.
+    # Set to 0.0 to accumulate from the very first scan.
+    warmup_seconds: 15.0

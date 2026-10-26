@@ -1,0 +1,36 @@
+<launch>
+  <!--
+    Pose-graph back end. Started next to FAST-LIVO2; it only subscribes, so it
+    can be launched or killed at any time without disturbing the front end.
+
+    Requires a second pcd_timestamp_injector publishing /livox/lidar_be with
+    abs_ns:=false (sim_min_livo2.launch.xml provides it), and /odometry/lio.
+
+    When publish_correction_tf is true this node owns map -> odom, so the
+    static identity publisher in sim_min_livo2 must not be started as well.
+  -->
+  <arg name="use_sim_time" default="true"/>
+  <arg name="log_level" default="info"/>
+  <arg name="config" default="$(find-pkg-share vector_mapping)/config/pgo_backend.yaml"/>
+  <!-- Adds the absolute position factor. Only meaningful when something
+       publishes an absolute fix; sim_min_livo2.launch.xml starts the GNSS
+       chain and passes the same flag here.
+
+       Named enable_gnss_factor, not use_gnss, because include arguments land in
+       the shared launch configuration context rather than staying inside the
+       include: a name that some other include also sets silently inherits
+       that other include's value. -->
+  <arg name="enable_gnss_factor" default="false"/>
+
+  <node
+    pkg="vector_mapping"
+    exec="pgo_backend_node"
+    name="pgo_backend"
+    output="screen"
+    args="--ros-args --log-level $(var log_level)">
+    <param name="use_sim_time" value="$(var use_sim_time)"/>
+    <param from="$(var config)"/>
+    <!-- After the YAML on purpose: this has to win over enable_gnss_factor. -->
+    <param name="enable_gnss_factor" value="$(var enable_gnss_factor)"/>
+  </node>
+</launch>

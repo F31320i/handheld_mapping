@@ -1,0 +1,35 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>vector_mapping</name>
+  <version>0.0.0</version>
+  <description>
+    Mapping back-end. map_accumulator_node rebuilds the front end's map
+    externally; pgo_backend_node adds a pose-graph layer on top of FAST-LIVO2
+    (keyframes, GICP loop closure, GTSAM optimisation, corrected map).
+  </description>
+  <maintainer email="nick@aigronick.com">nick</maintainer>
+  <license>TODO: License declaration</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>eigen</depend>
+  <depend>libpcl-all-dev</depend>
+  <depend>nav_msgs</depend>
+  <depend>pcl_conversions</depend>
+  <depend>rclcpp</depend>
+  <depend>sensor_msgs</depend>
+  <depend>std_srvs</depend>
+  <depend>tf2_ros</depend>
+  <depend>visualization_msgs</depend>
+
+  <!-- GTSAM is not a ROS package: it is unpacked into the workspace's
+       merge-install prefix, so it cannot be declared here. -->
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

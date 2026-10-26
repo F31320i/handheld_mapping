@@ -1,0 +1,39 @@
+# Logitech C310 (046d:081b) on /dev/video0, captured by this package's own
+# v4l2_capture node instead of usb_cam.
+#
+# Why: usb_cam 0.8.1 was measured on this machine delivering every frame
+# 0.1-1.0 s after its capture timestamp (11 starts: 98, 229, 303, 406, 422,
+# 456, 636, 757, 896, 1008, 1011 ms), fixed for the life of the process.
+# A minimal V4L2 reader on the same device with the same four mmap buffers sees
+# 33-48 ms, so the camera and the kernel were never the problem. See the header
+# of src/v4l2_capture.cpp for what was ruled out.
+#
+# 640x480 @ 30 Hz YUYV, published as sensor_msgs/Image encoding
+# "yuv422_yuy2" on /image_raw. FAST-LIVO2 converts it with
+# cv_bridge::toCvCopy(msg, "bgr8"), which handles yuv422_yuy2. MJPEG would give
+# rgb8 directly but costs a decode; it measured worse and this node does not
+# implement it.
+#
+# The V4L2 controls are NOT set here -- scripts/set_camera_controls.sh owns
+# them (manual 10 ms exposure, 50 Hz anti-banding, exposure_dynamic_framerate=0
+# so the C310 does not drop to 24 Hz in dim light). usb_cam used to overwrite
+# some of those on every start; this node writes none.
+#
+# Frame id: camera_link. Nothing publishes a TF for it on this rig; it exists
+# only to label the image. The LiDAR-camera transform lives in the LIVO2 config
+# (Rcl/Pcl), not in TF.
+/**:
+  ros__parameters:
+    video_device: "/dev/video0"
+    image_width: 640
+    image_height: 480
+    framerate: 30.0
+    pixel_format: "yuyv"        # -> yuv422_yuy2
+    frame_id: "camera_link"
+    # 4 matches what uvcvideo/usb_cam used. The node drains whatever is queued
+    # every cycle, so more buffers would only add drain work, not safety.
+    buffer_count: 4
+    # Health line every 10 s: "<fps> fps, frame age at publish <min>-<max> ms,
+    # <n> stale frame(s) discarded". Frame age should read ~30-60 ms; a growing
+    # number means the publish path, not the camera, is the bottleneck.
+    stats_period: 10.0

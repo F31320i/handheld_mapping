@@ -1,0 +1,188 @@
+# fast_limo on the handheld rig (real hardware, no camera).
+#
+# Derived from vector_localization/config/fast_limo.yaml (the tuned indoor sim
+# config), with every assumption that came from the Gazebo robot removed. The
+# matcher parameters are unchanged on purpose: they were measured to 0.35 cm /
+# -0.02 deg indoors and the front end is the part we do not touch.
+#
+# What this run is for: fast_limo needs LiDAR + IMU only, so it is the way to
+# bring up driver / timestamps / extrinsics / Zenoh *before* the LiDAR-camera
+# calibration board exists. No camera, no intrinsics, no calibration board.
+#
+# Only two things here are real-hardware-specific and worth re-checking if the
+# map looks wrong: the extrinsics (factory values, see below) and the two
+# filters that are disabled because their assumptions do not hold on a rig you
+# carry by hand.
+
+fast_limo:
+  ros__parameters:
+    topics:
+      input:
+        # NOT /livox/lidar_livo. Same sweep, different time convention:
+        # fast_limo reads a LIVOX point's `timestamp` as SECONDS SINCE THE SWEEP
+        # START (Localizer.cpp deskewPointCloud does `sweep_ref_time +
+        # pt.timestamp` and uses the result to index propagated IMU states),
+        # while LIVO2 needs ABSOLUTE NANOSECONDS in that field. Feeding LIVO2's
+        # topic here makes every point look 1.79e18 s old, the deskew gets a
+        # nonsense pose per point and the state diverges within one second with
+        # no error printed. The adapter publishes both; this is the other one.
+        lidar: /livox/lidar_limo
+        imu: /livox/imu_sync
+
+    frames:
+      # fast_limo broadcasts world -> body itself, which is all this run needs:
+      # no bridge, no EKF. map -> odom is a static identity in the launch.
+      world: odom
+      body: base_link
+      tf_pub: true
+
+    num_threads: 8
+
+    sensor_type: 3 # 0 OUSTER \ 1 VELODYNE \ 2 HESAI \ 3 LIVOX
+    # LIVOX is not about the vendor: LimoWrapper.cpp:480 requires a point field
+    # named `timestamp` of type FLOAT64 and reads it as absolute nanoseconds
+    # (Common.hpp:109). /livox/lidar_livo is exactly that.
+
+    # /fast_limo/final_raw (the registered scan BEFORE the voxel grid) only
+    # exists with debug on, and it is the map source this launch accumulates:
+    # 0.1 m voxelised /fast_limo/pointcloud would cap the map's density at what
+    # the matcher wants to see, not at what a map wants to keep.
+    debug: true
+    verbose: true # per-scan timing board; turn off once the rig is trusted
+
+    estimate_extrinsics: true # refines the factory IMU-LiDAR extrinsic online
+    time_offset: true # estimates IMU-LiDAR offset; the driver stamps both from the host clock
+    end_of_sweep: false # the Mid-360 header stamp is the start of the sweep
+
+    calibration:
+      # ON, unlike the sim config. The sim IMU has no bias, so all three flags
+      # were false just to skip the startup gate. A real IMU does have bias, and
+      # this is the only place it gets measured: hold the rig still for `time`
+      # seconds after the node starts, or the first pose will drift.
+      gravity_align: true
+      accel: true
+      gyro: true
+      time: 5.0 # [s]
+
+    extrinsics:
+      # w.r.t base_link [SI]
+      #
+      # base_link is the LIDAR's own frame, per the vectormachines convention
+      # used elsewhere in this workspace: body origin at the Mid-360's optical
+      # centre, axes parallel to the LiDAR's. So the frame an operator sees in
+      # RViz *is* the sensor -- at startup it stands at the map origin, and
+      # every pose after that is "where the LiDAR is".
+      #
+      # The two sensors share one housing and cannot move relative to each
+      # other, so both numbers are the factory pair from the Mid-360 manual,
+      # just read from the LiDAR end instead of the IMU end:
+      #
+      #   t_lidar->imu = (0.011, 0.02329, 0.00288) m, R = identity
+      #   (the IMU axes are parallel to the LiDAR axes)
+      #
+      # Note that State.cpp starts the online extrinsic estimate at zero
+      # (pLI = 0, qLI = I) and Localizer.cpp:470 overwrites
+      # extr.lidar2baselink_T with it after every update, so while
+      # estimate_extrinsics is on, `lidar.t` below only affects the very first
+      # scan. Harmless here: the true value is zero now, so the estimate starts
+      # at the right answer instead of having to walk back 2.6 cm.
+      #
+      # R convention: the 3x3 is written ROW-major here but Localizer.cpp:72-86
+      # maps it COLUMN-major and then transposes, so the two cancel and the
+      # matrix is R_base_sensor -- the same convention as the URDF rpy.
+      imu:
+        t: [0.011, 0.02329, 0.00288]
+        R: [
+          1.0, 0.0, 0.0,
+          0.0, 1.0, 0.0,
+          0.0, 0.0, 1.0
+        ]
+      lidar:
+        t: [0.0, 0.0, 0.0]
+        R: [
+          1.0, 0.0, 0.0,
+          0.0, 1.0, 0.0,
+          0.0, 0.0, 1.0
+        ]
+
+    intrinsics:
+      # Starting guesses only; the calibration block above overwrites both
+      # biases during the standstill window.
+      accel:
+        bias: [0.01, 0.01, 0.01] # [m/s^2]
+        sm: [
+          1.0, 0.0, 0.0,
+          0.0, 1.0, 0.0,
+          0.0, 0.0, 1.0
+        ]
+      gyro:
+        bias: [0.01, 0.01, 0.01] # [rad/s]
+
+    filters:
+      cropBox:
+        # OFF. In the sim this box removed the mower's own body. Handheld there
+        # is no body to remove, and a box tuned to nothing would silently carve
+        # a hole around whatever the holder happens to be. Turn it on only if
+        # the handle/arm starts showing up as a permanent ghost in the map.
+        active: false
+        box:
+          min: [-1.0, -1.0, -1.0] # [m] base_link
+          max: [1.0, 1.0, 1.0]
+
+      groundRemoval:
+        # OFF, and this is not a preference.
+        #
+        # Localizer.cpp:100 takes the cut height from
+        # extrinsics.lidar.t.z(), i.e. "how far the LiDAR sits above the
+        # floor". base_link is the LiDAR centre here, so that number is 0.0 m
+        # and the half-space cut would land AT SENSOR HEIGHT -- it would delete
+        # the floor and everything below the rig. There is also no constant
+        # height to substitute: you carry it, and it changes as you walk.
+        #
+        # The floor is a perfectly good plane to match against; leaving it in
+        # is what the sim does once the plane is not tilted 45 deg.
+        active: false
+        height: 0.05 # [m] above the floor -- meaningless unless h_L is right
+        minKeepRatio: 0.20
+
+      voxelGrid:
+        active: true
+        leafSize: [0.1, 0.1, 0.1]
+
+      minDistance:
+        active: false
+        value: 1.0 # [m]
+
+      FoV:
+        active: false
+        value: 120.0 # [deg]
+
+      rateSampling:
+        active: false
+        value: 2
+
+    iKFoM:
+      MAX_NUM_ITERS: 5
+      # Uniform stride subsampling, not head truncation -- see the long comment
+      # in the sim config; truncation biased the selection towards the floor.
+      MAX_NUM_MATCHES: 5000
+      MAX_NUM_PC2MATCH: 10000
+      LIMITS: 0.001
+
+      Mapping:
+        # Unchanged from the sim tuning: indoor sweeps measured
+        #   k=8  thr=0.10 -> 2.4 cm / -1.28 deg (systematic yaw shortfall)
+        #   k=12 thr=0.05 -> 0.35 cm / -0.02 deg   <- this
+        NUM_MATCH_POINTS: 12
+        MAX_DIST_PLANE: 2.5 # [m]
+        PLANES_THRESHOLD: 0.05 # [m]
+        Octree:
+          bucket_size: 4
+          min_extent: 0.1
+          downsampling: true
+
+      covariance:
+        gyro: 0.001
+        accel: 0.01
+        bias_gyro: 0.01
+        bias_accel: 0.01
