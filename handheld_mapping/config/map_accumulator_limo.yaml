@@ -18,14 +18,16 @@ map_accumulator:
     output_path_topic: /handheld/trajectory_raw
     # Empty: adopt whatever frame the scans carry (fast_limo's world, i.e. odom).
     map_frame: ""
-    # 0.01 m (was 0.05). The Mid-360 gives ~1.03 deg between neighbouring
-    # points of one sweep -- 1.8 cm at 1 m, 3.6 cm at 2 m -- and this chain
-    # measures ~20 mm of range noise, so 10 mm is the smallest cell that still
-    # merges repeated passes into one surface instead of a fuzzy shell. Cost is
-    # point count: a 120 m^2 room at 0.01 m is ~1.2 M cells, ~4.8 M at 0.005.
-    # If the live map starts costing CPU, raise this before touching anything
-    # else -- it does not affect the front end or localization.
-    voxel_leaf: 0.01
+    # 0.005 m. The Mid-360 gives ~1.03 deg between neighbouring points of one
+    # sweep -- 1.8 cm at 1 m, 3.6 cm at 2 m -- and this chain measures ~20 mm
+    # of range noise, so 10 mm is where repeated passes still merge into one
+    # surface; 5 mm is below the noise and only pays off if the operator
+    # lingers. Chosen deliberately on 2026-10-26. Cost is point count: a
+    # 120 m^2 room is ~1.2 M cells at 0.01 m, ~4.8 M at 0.005 m, and this node
+    # republishes the whole map every publish_rate -- if rviz or CPU suffers,
+    # drop publish_rate first, then raise this (it does not affect the front
+    # end or localization).
+    voxel_leaf: 0.005
     publish_rate: 1.0
     max_points: 20000000
     queue_depth: 20

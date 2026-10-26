@@ -6,7 +6,7 @@
 #
 #   * frontend_cloud_topic is /fast_limo/final_raw, not /fast_limo/pointcloud:
 #     the latter is already voxelised to the matcher's 0.1 m, which is coarser
-#     than keyframe_voxel (0.01) and map_voxel (0.01) below -- feeding it would
+#     than keyframe_voxel (0.005) and map_voxel (0.005) below -- feeding it would
 #     throw away detail the back end is configured to keep. final_raw needs
 #     fast_limo's debug: true (it is on).
 #   * odom_topic is /fast_limo/state. No remap to /odometry/lio: nothing else
@@ -26,7 +26,7 @@
 # publishing a placeholder), which is a few seconds after the front end starts.
 #
 # Outputs
-#   /pgo/map         optimised map, map frame, one point per map_voxel (0.01 m)
+#   /pgo/map         optimised map, map frame, one point per map_voxel (0.005 m)
 #   /pgo/trajectory  optimised trajectory
 #   /pgo/loops       accepted loop closures, as a MarkerArray
 #   TF map -> odom
@@ -58,7 +58,9 @@ pgo_backend:
     keyframe_angle_deg: 15.0
     keyframe_time: 0.20        # s
     keyframe_max_time: 5.0     # force one after a gap, but only if moved
-    keyframe_voxel: 0.01
+    # Stored resolution of a keyframe scan; must be <= map_voxel or the
+    # keyframes cap the map again. Same 5 mm as map_voxel -- see the note there.
+    keyframe_voxel: 0.005
     keyframe_min_points: 200
 
     # Loop closure: radius gate on the current estimate, then GICP plus an
@@ -100,17 +102,20 @@ pgo_backend:
     # period only controls how often the fused map is materialised and sent --
     # not how much work the back end does, which no longer grows with the run.
     #
-    # 0.01 m, not the 0.05 it shipped with (2026-10-26). The floor is set by
-    # the Mid-360, not by the back end: 20000 points per 100 ms sweep over
-    # 360 x 59 deg is 1.03 deg between neighbouring points, i.e. 1.8 cm apart
-    # at 1 m and 3.6 cm at 2 m, and ~20 mm is also the range noise this chain
-    # measures -- so a cell much below 10 mm stores the same noise in smaller
-    # boxes instead of resolving more wall. 0.01 m is the point where a second
-    # pass still merges into one surface; 0.005 m only pays off if the operator
-    # deliberately lingers (< 1.5 m, ~0.2 m/s), otherwise the wall shows up as
-    # a fuzzy shell rather than a thin sheet. Loop-closure GICP is unaffected:
-    # it works on loop_icp_source_voxel / loop_icp_target_voxel (0.10) above.
-    map_voxel: 0.01
+    # 0.005 m. The floor is set by the Mid-360, not by the back end: 20000
+    # points per 100 ms sweep over 360 x 59 deg is 1.03 deg between neighbouring
+    # points, i.e. 1.8 cm apart at 1 m and 3.6 cm at 2 m, and ~20 mm is also the
+    # range noise this chain measures. Measured fill times on a wall at 2 m
+    # (one point per cell): 0.02 m -> 0.3 s, 0.01 m -> 1.3 s, 0.005 m -> 5.2 s.
+    # So 10 mm is where a normal walking pass still merges into one surface and
+    # 5 mm is below the noise: it only resolves more wall if the operator
+    # deliberately lingers (< 1.5 m, ~0.2 m/s), otherwise repeated passes show
+    # up as a fuzzy shell instead of a thin sheet. 0.005 was chosen on
+    # 2026-10-26 with that trade understood -- if the walls come out thick
+    # rather than sharp, step back to 0.01 before blaming anything else.
+    # Loop-closure GICP is unaffected: it works on loop_icp_source_voxel /
+    # loop_icp_target_voxel (0.10) above.
+    map_voxel: 0.005
     map_publish_period: 2.0    # s; only rebuilds when a keyframe was added
     publish_correction_tf: true   # this node owns map -> odom
     publish_current_scan: false
